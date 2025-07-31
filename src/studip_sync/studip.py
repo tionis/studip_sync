@@ -7,48 +7,13 @@ from selenium import webdriver
 import shutil
 import subprocess
 import requests
-import tempfile
+import pzp
 import re
 import sqlite3
 import sys
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
-
-class FzfPrompt:
-    def __init__(self, executable_path=None):
-        if executable_path:
-            self.executable_path = executable_path
-        elif not shutil.which("fzf") and not executable_path:
-            raise SystemError(
-                f"Cannot find 'fzf' installed on PATH.")
-        else:
-            self.executable_path = "fzf"
-
-    def prompt(self, choices=None, fzf_options="", delimiter='\n'):
-        # convert a list to a string [ 1, 2, 3 ] => "1\n2\n3"
-        choices_str = delimiter.join(map(str, choices))
-        selection = []
-
-        with tempfile.NamedTemporaryFile(delete=False) as input_file:
-            with tempfile.NamedTemporaryFile(delete=False) as output_file:
-                # Create a temp file with list entries as lines
-                input_file.write(choices_str.encode('utf-8'))
-                input_file.flush()
-
-        # Invoke fzf externally and write to output file
-        os.system(
-            f"{self.executable_path} {fzf_options} < \"{input_file.name}\" > \"{output_file.name}\"")
-
-        # get selected options
-        with open(output_file.name, encoding="utf-8") as f:
-            for line in f:
-                selection.append(line.strip('\n'))
-
-        os.unlink(input_file.name)
-        os.unlink(output_file.name)
-
-        return selection
 
 class StudipSync:
     # Config
@@ -94,22 +59,6 @@ class StudipSync:
                 raise Exception("No git repository found")
             self.top_level = git_top_level_process.stdout.decode("utf-8").strip()
         self.load_current_semester()
-
-    def get_firefox_profile_dir(self): # Get main firefox profile directory
-        if platform.system() == "Windows":
-            firefox_dir = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
-        elif platform.system() == "Linux":
-            firefox_dir = os.path.join(os.path.expanduser("~"), ".mozilla", "firefox")
-        elif platform.system() == "Darwin":
-            firefox_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Firefox", "Profiles")
-        else:
-            raise NotImplementedError(f"Platform \"{platform.system()}\" not supported")
-        # Reading profiles.ini to get the default profile
-        profiles_ini = os.path.join(firefox_dir, "profiles.ini")
-        firefoxProfilesConfig = configparser.ConfigParser()
-        firefoxProfilesConfig.read(profiles_ini)
-        profile = firefoxProfilesConfig["Profile0"]["Path"] # Unsure if this is correct
-        return os.path.join(firefox_dir, profile)
 
     def open_cookie_db(self, cookie_file):
         conn = sqlite3.connect(cookie_file)
@@ -330,11 +279,13 @@ class StudipSync:
         for val in semesters.values():
             semesterNameToMeta[val["title"]] = val
         if semester is None:
-            fzf = FzfPrompt()
-            chosen = fzf.prompt(semesterNameToMeta.keys())
+            chosen = pzp.pzp(semesterNameToMeta.keys())
+            eprint("Chosen semester:", chosen)
             if len(chosen) == 0:
                 raise Exception("No semester chosen")
-            semester = chosen[0]
+            semester = chosen
+        if semester not in semesterNameToMeta:
+            raise ValueError(f"Semester {semester} not found in available semesters: {list(semesterNameToMeta.keys())}")
         semester_id = semesterNameToMeta[semester]["id"]        
         self.current_semester = semester_id
         self.save_current_semester(semester_id)

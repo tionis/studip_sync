@@ -14,7 +14,8 @@ classifiers = [
 ]
 dependencies = [
     "requests",
-    "selenium"
+    "selenium",
+    "pzp"
 ]
 
 [project.urls]
