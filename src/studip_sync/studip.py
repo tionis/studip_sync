@@ -2,12 +2,14 @@
 import os
 import configparser
 import platform
-import json
+#import json
+from selenium import webdriver
 import shutil
 import subprocess
 import requests
 import tempfile
 import re
+import sqlite3
 import sys
 
 def eprint(*args, **kwargs):
@@ -54,9 +56,22 @@ class StudipSync:
     studip_host = "studip.uni-passau.de"
     prefix = "/studip/api.php"
     auth_method = "cookie"
-    browser = "firefox"
     use_git = False
     git_commit_message_prefix = "studip-sync: "
+
+    # Cookies DB migrations
+    cookie_db_migrations = [
+        """CREATE TABLE cookies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            host TEXT NOT NULL,
+            path TEXT NOT NULL,
+            secure INTEGER NOT NULL,
+            httponly INTEGER NOT NULL,
+            expires INTEGER
+        );""",
+    ]
 
     # Cache
     cookie = None
@@ -96,34 +111,125 @@ class StudipSync:
         profile = firefoxProfilesConfig["Profile0"]["Path"] # Unsure if this is correct
         return os.path.join(firefox_dir, profile)
 
-    def get_cookie_from_browser(self):
+    def open_cookie_db(self, cookie_file):
+        conn = sqlite3.connect(cookie_file)
+        cursor = conn.cursor()
+        while True:
+            user_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+            if user_version >= len(self.cookie_db_migrations):
+                break
+            migration = self.cookie_db_migrations[user_version]
+            cursor.execute(migration)
+            cursor.execute(f"PRAGMA user_version = {user_version + 1}")
+        conn.commit()
+        cursor.close()
+        return conn
+
+    def validate_cookie(self, cookie):
+        if cookie is None or cookie == "":
+            return False
+        # Check if the cookie is valid by making a request to the StudIP API
+        try:
+            resp = requests.get(f"https://{self.studip_host}{self.prefix}/user", headers={"Cookie": f"Seminar_Session={cookie}"})
+            if resp.status_code == 200:
+                return True
+            else:
+                eprint(f"Invalid cookie: {resp.status_code} {resp.text}")
+                return False
+        except requests.RequestException as e:
+            eprint(f"Error validating cookie: {e}")
+            return False
+
+
+    def get_browser_cookie(self):
         if self.cookie is not None:
             return self.cookie
-        if self.browser == "firefox":
-            cookieFilePath = os.path.join(self.get_firefox_profile_dir(), "sessionstore-backups", "recovery.jsonlz4")
-            # Check if dejsonlz4 is in PATH
-            dejsonlz4PathLoc = shutil.which("dejsonlz4")
-            if dejsonlz4PathLoc:
-                dejsonlz4 = dejsonlz4PathLoc
-            else:
-                if shutil.which("dejsonlz4.com"):
-                    dejsonlz4 = "dejsonlz4.com"
-                else:
-                    raise FileNotFoundError("dejsonlz4 not found")
-            studip_host = self.studip_host
-            cookies_process = subprocess.run([dejsonlz4, cookieFilePath], capture_output=True)
-            cookies = json.loads(cookies_process.stdout)["cookies"]
-            for cookie in cookies:
-                if cookie["host"] == studip_host and cookie["name"] == "Seminar_Session":
-                    self.cookie = cookie['value']
-                    return cookie['value']
-            raise KeyError("Cookie not found")
+        cache_dir = "" # XDG CACHE DIR for studip_sync
+        # use XFD_CACHE_HOME if set, otherwise use ~/.cache/studip_sync
+        if "XDG_CACHE_HOME" in os.environ:
+            cache_dir = os.path.join(os.environ["XDG_CACHE_HOME"], "studip_sync")
         else:
-            raise NotImplementedError(f"Browser \"{self.browser}\" not supported")
+            if platform.system() == "Windows":
+                cache_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "studip_sync")
+            elif platform.system() == "Linux":
+                cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "studip_sync")
+            elif platform.system() == "Darwin":
+                cache_dir = os.path.join(os.path.expanduser("~"), "Library", "Caches", "studip_sync")
+        if cache_dir == "":
+            raise ValueError("Cache directory not set. Please set XDG_CACHE_HOME or use a different platform.")
+        # Ensure the cache directory exists
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+        # Check if the cookie file exists
+        cookie_file = os.path.join(cache_dir, "cookies.db")
+        db = self.open_cookie_db(cookie_file)
+        cursor = db.cursor()
+        # Query the cookie database for the Seminars_Session cookie
+        cursor.execute("SELECT value FROM cookies WHERE name = 'Seminar_Session' AND host = ? AND name = 'Seminar_Session'", (self.studip_host,))
+        result = cursor.fetchone()
+        cookie = ""
+        if result is not None:
+            cookie = result[0]
+            eprint(f"Found cookie in cache: {cookie}")
+        
+        if self.validate_cookie(cookie):
+            self.cookie = cookie
+            return cookie
+
+        eprint("Cookie not found or invalid, opening browser session for reauthentication...")
+        # Initialize the browser driver
+        driver = webdriver.Chrome()
+
+        # Load old cookies
+        cursor.execute("SELECT name, value, host, path, secure, httponly, expires FROM cookies WHERE host = ?", (self.studip_host,))
+        cookies = cursor.fetchall()
+        for name, value, host, path, secure, httponly, expires in cookies:
+            # Add cookies to the browser
+            driver.add_cookie({
+                'name': name,
+                'value': value,
+                'domain': host,
+                'path': path,
+                'secure': bool(secure),
+                'httpOnly': bool(httponly),
+                'expiry': expires if expires is not None else None
+            })
+        # Open the StudIP login page (use prefix but replace api.php with index.php at the end)
+        driver.get(f"https://{self.studip_host}{self.prefix.removesuffix('api.php')}index.php")
+
+        # Wait for the user to log in
+        eprint("Please log in to StudIP in the opened browser window and don't close it.")
+        input("Press Enter after logging in...")
+
+        # Retrieve browser cookies
+        cookies = driver.get_cookies()
+
+        # Print the cookies
+        for cookie in cookies:
+            cursor.execute(
+                "INSERT OR REPLACE INTO cookies (name, value, host, path, secure, httponly, expires) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (cookie['name'], cookie['value'], cookie['domain'], cookie['path'], int(cookie.get('secure', False)), int(cookie.get('httpOnly', False)), cookie.get('expiry'))
+            )
+        
+        # Commit the changes to the database
+        db.commit()
+        cursor.close()
+
+        # Close the browser
+        driver.quit()
+
+        # Set the cookie attribute
+        self.cookie = next((cookie['value'] for cookie in cookies if cookie['name'] == 'Seminar_Session'), None)
+        if self.cookie is None:
+            raise Exception("Failed to retrieve Seminar_Session cookie from browser")
+        eprint(f"Retrieved cookie: {self.cookie}")
+        
+        # Return the cookie
+        return self.cookie
 
     def get_cookie(self):
         if self.auth_method == "cookie":
-            return self.get_cookie_from_browser()
+            return self.get_browser_cookie()
         else:
             raise NotImplementedError(f"Auth method \"{self.auth_method}\" not supported")
 

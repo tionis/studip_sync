@@ -1,4 +1,4 @@
-.idea
+__pycache__
 .studip-sync.toml
 data
 .venv
