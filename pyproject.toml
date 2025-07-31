@@ -1,6 +1,6 @@
 [project]
 name = "studip_sync"
-version = "0.0.3"
+version = "0.0.4"
 authors = [
   { name="tionis", email="me@tionis.dev" },
 ]
