@@ -1,8 +1,8 @@
 #!/bin/env python3
 import os
-import configparser
 import platform
 #import json
+import browser_cookie3
 from selenium import webdriver
 import shutil
 import subprocess
@@ -23,6 +23,7 @@ class StudipSync:
     auth_method = "cookie"
     use_git = False
     git_commit_message_prefix = "studip-sync: "
+    browser = "selenium"  # or "firefox", "chrome", "brave"
 
     # Cookies DB migrations
     cookie_db_migrations = [
@@ -126,32 +127,83 @@ class StudipSync:
             return cookie
 
         eprint("Cookie not found or invalid, opening browser session for reauthentication...")
-        # Initialize the browser driver
-        driver = webdriver.Chrome()
 
-        # Load old cookies
-        cursor.execute("SELECT name, value, host, path, secure, httponly, expires FROM cookies WHERE host = ?", (self.studip_host,))
-        cookies = cursor.fetchall()
-        for name, value, host, path, secure, httponly, expires in cookies:
-            # Add cookies to the browser
-            driver.add_cookie({
-                'name': name,
-                'value': value,
-                'domain': host,
-                'path': path,
-                'secure': bool(secure),
-                'httpOnly': bool(httponly),
-                'expiry': expires if expires is not None else None
-            })
-        # Open the StudIP login page (use prefix but replace api.php with index.php at the end)
-        driver.get(f"https://{self.studip_host}{self.prefix.removesuffix('api.php')}index.php")
+        cookies = []
+        if self.browser == "selenium":
+            # Initialize the browser driver
+            driver = webdriver.Chrome()
 
-        # Wait for the user to log in
-        eprint("Please log in to StudIP in the opened browser window and don't close it.")
-        input("Press Enter after logging in...")
+            # Load old cookies
+            cursor.execute("SELECT name, value, host, path, secure, httponly, expires FROM cookies WHERE host = ?", (self.studip_host,))
+            cookies = cursor.fetchall()
+            for name, value, host, path, secure, httponly, expires in cookies:
+                # Add cookies to the browser
+                driver.add_cookie({
+                    'name': name,
+                    'value': value,
+                    'domain': host,
+                    'path': path,
+                    'secure': bool(secure),
+                    'httpOnly': bool(httponly),
+                    'expiry': expires if expires is not None else None
+                })
+            # Open the StudIP login page (use prefix but replace api.php with index.php at the end)
+            driver.get(f"https://{self.studip_host}{self.prefix.removesuffix('api.php')}index.php")
 
-        # Retrieve browser cookies
-        cookies = driver.get_cookies()
+            # Wait for the user to log in
+            eprint("Please log in to StudIP in the opened browser window and don't close it.")
+            input("Press Enter after logging in...")
+
+            # Retrieve browser cookies
+            cookies = driver.get_cookies()
+
+            # Close the browser
+            driver.quit()
+
+        elif self.browser == "firefox":
+            cj = browser_cookie3.firefox(domain_name=self.studip_host)
+            cookie_dict = requests.utils.dict_from_cookiejar(cj)
+            cookies = []
+            for name, value in cookie_dict.items():
+                cookies.append({
+                    'name': name,
+                    'value': value,
+                    'domain': self.studip_host,
+                    'path': '/',
+                    'secure': False,
+                    'httpOnly': False,
+                    'expiry': None
+                })
+        elif self.browser == "chrome":
+            cj = browser_cookie3.chrome(domain_name=self.studip_host)
+            cookie_dict = requests.utils.dict_from_cookiejar(cj)
+            cookies = []
+            for name, value in cookie_dict.items():
+                cookies.append({
+                    'name': name,
+                    'value': value,
+                    'domain': self.studip_host,
+                    'path': '/',
+                    'secure': False,
+                    'httpOnly': False,
+                    'expiry': None
+                })
+        elif self.browser == "brave":
+            cj = browser_cookie3.brave(domain_name=self.studip_host)
+            cookie_dict = requests.utils.dict_from_cookiejar(cj)
+            cookies = []
+            for name, value in cookie_dict.items():
+                cookies.append({
+                    'name': name,
+                    'value': value,
+                    'domain': self.studip_host,
+                    'path': '/',
+                    'secure': False,
+                    'httpOnly': False,
+                    'expiry': None
+                })
+        else:
+            raise ValueError(f"Unknown browser: '{self.browser}'")
 
         # Print the cookies
         for cookie in cookies:
@@ -163,9 +215,6 @@ class StudipSync:
         # Commit the changes to the database
         db.commit()
         cursor.close()
-
-        # Close the browser
-        driver.quit()
 
         # Set the cookie attribute
         self.cookie = next((cookie['value'] for cookie in cookies if cookie['name'] == 'Seminar_Session'), None)
