@@ -311,7 +311,7 @@ class StudipSync:
         os.mkdir(current_semester_path)
         courses = self.get_courses(self.get_current_semester())
         for course in list(set([self.escape_filename(course["title"]) for course in courses])):
-            os.symlink(os.path.join("..", "archive" , course), os.path.join(current_semester_path, course), target_is_directory=True)
+            os.symlink(os.path.join("..", "archive" , self.clean_path(course)), os.path.join(current_semester_path, course), target_is_directory=True)
         if self.use_git:
             # Count changes in this-semester dir
             changesProcess = subprocess.run(["git", "-C", self.data_path, "diff", "--name-only", "--", "current-semester"], capture_output=True)
