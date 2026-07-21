@@ -1,3 +1,4 @@
-if __name__ == '__main__':
+if __name__ == "__main__":
     from studip_sync.cli import app
-    app()
+
+    raise SystemExit(app())

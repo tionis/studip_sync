@@ -1,27 +1,50 @@
 # studip-sync
 
-A simple script that uses the studip REST api to sync files.  
-It can be installed via pipx:
+A command-line tool that uses the Stud.IP REST API to synchronize course files
+into a local archive.
+
+## Installation
 
 ```bash
 pipx install git+https://github.com/tionis/studip_sync
-# or if you want to use uv to install the tool:
+# or with uv:
 uv tool install git+https://github.com/tionis/studip_sync
-
 ```
 
 ## Usage
-This script needs cookies either via a temporary browser window you login to or it steals your browsers cookies. You can select a browser with the `--browser` flag.  
-Before the first sync you need to select the current semester to set up the symlinks for the current semester folder and for the tool to select which courses to sync.
-```
+
+The tool authenticates with a `Seminar_Session` cookie. It can extract the
+cookie from Firefox, Chrome, or Brave, or open a Selenium-controlled browser for
+an interactive login. Select the browser with `--browser`.
+
+Before the first sync, select a semester. This also creates the
+`this-semester` directory containing links to the selected courses:
+
+```bash
 studip_sync --data-path ~/Documents/studip --browser brave select-semester
 ```
 
-Syncing can then be done with the sync subcommand:
-```
+Then synchronize new files:
+
+```bash
 studip_sync --data-path ~/Documents/studip --browser brave sync
 ```
 
-> NOTE: The studip REST API will be deprecated soon as mentionend in #1
+Downloads are written to temporary files and atomically moved into place only
+after completion. Temporary server errors are retried. If a file still fails,
+the remaining files are processed and the command exits with status 1 after a
+summary; rerunning the command retries the failed file.
 
-> NOTE: studip-sync does not handle file changes, as it only syncs based on the filename
+Existing non-empty files are left untouched. This means the tool does not yet
+detect a changed remote file when its name stays the same.
+
+## Development
+
+The regression suite uses only the Python standard library:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+The legacy Stud.IP REST API used by this project is deprecated; see the
+discussion in issue #1.
